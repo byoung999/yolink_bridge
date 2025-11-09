@@ -1,0 +1,49 @@
+//============================================================================
+
+String Yolink_Request "YoLink Request Data"  { channel="mqtt:topic:yolink:request"      }
+String Yolink_Devices "YoLink Devices"       { channel="mqtt:topic:yolink:home:devices" }
+
+//============================================================================
+
+Group gYolinkAlert   "YoLink items generating alerts"
+Group gYolinkBattery "YoLink battery Items"
+Group gYolinkOnline  "YoLink online Items"
+
+// State items.
+String Kitchen_Sink_Leak_Sensor            "Kitchen Sink Leak Sensor"                                 (gYolinkAlert  ) { channel="mqtt:topic:yolink:kitchen_sink_leak_sensor:state"    }
+String Master_Bathroom_Leak_Sensor         "Master Bathroom Leak Sensor"                              (gYolinkAlert  ) { channel="mqtt:topic:yolink:master_bathroom_leak_sensor:state" }
+String Guest_Bathroom_Leak_Sensor          "Guest Bathroom Leak Sensor"                               (gYolinkAlert  ) { channel="mqtt:topic:yolink:guest_bathroom_leak_sensor:state"  }
+
+String Whole_House_Valve                   "Whole House Valve"                                                         { channel="mqtt:topic:yolink:whole_house_valve:state"           }
+
+// Battery level items.
+Number Kitchen_Sink_Leak_Sensor_Battery    "Kitchen Sink Leak Sensor Battery [%d%%]"                  (gYolinkBattery) { channel="mqtt:topic:yolink:kitchen_sink_leak_sensor:battery"    [profile="transform:MAP", function="battery4.map"] }
+Number Master_Bathroom_Leak_Sensor_Battery "Master Bathroom Leak Sensor Battery [%d%%]"               (gYolinkBattery) { channel="mqtt:topic:yolink:master_bathroom_leak_sensor:battery" [profile="transform:MAP", function="battery4.map"] }
+Number Guest_Bathroom_Leak_Sensor_Battery  "Guest Bathroom Leak Sensor Battery [%d%%]"                (gYolinkBattery) { channel="mqtt:topic:yolink:guest_bathroom_leak_sensor:battery"  [profile="transform:MAP", function="battery4.map"] }
+Number Whole_House_Valve_Battery           "Whole House Valve Battery [%d%%]"                         (gYolinkBattery) { channel="mqtt:topic:yolink:whole_house_valve:battery"           [profile="transform:MAP", function="battery4.map"] }
+
+// Online items.
+Switch Kitchen_Sink_Leak_Sensor_Online     "Kitchen Sink Leak Sensor Online"                          (gYolinkOnline ) { channel="mqtt:topic:yolink:kitchen_sink_leak_sensor:online"     }
+Switch Master_Bathroom_Leak_Sensor_Online  "Master Bathroom Leak Sensor Online"                       (gYolinkOnline ) { channel="mqtt:topic:yolink:master_bathroom_leak_sensor:online"  }
+Switch Guest_Bathroom_Leak_Sensor_Online   "Guest Bathroom Leak Sensor Online"                        (gYolinkOnline ) { channel="mqtt:topic:yolink:guest_bathroom_leak_sensor:online"   }
+Switch Whole_House_Valve_Online            "Whole House Valve Online"                                 (gYolinkOnline ) { channel="mqtt:topic:yolink:whole_house_valve:online"            }
+Switch Speaker_Hub_Online                  "Speaker Hub Online"                                       (gYolinkOnline ) { channel="mqtt:topic:yolink:speaker_hub:online"                  }
+
+// Signal level items.
+Number:Dimensionless Kitchen_Sink_Leak_Sensor_Signal     "Kitchen Sink Leak Sensor Signal [%d%%]"                      { channel="mqtt:topic:yolink:kitchen_sink_leak_sensor:signal"     }
+Number:Dimensionless Master_Bathroom_Leak_Sensor_Signal  "Master Bathroom Leak Sensor Signal [%d%%]"                   { channel="mqtt:topic:yolink:master_bathroom_leak_sensor:signal"  }
+Number:Dimensionless Guest_Bathroom_Leak_Sensor_Signal   "Guest Bathroom Leak Sensor Signal [%d%%]"                    { channel="mqtt:topic:yolink:guest_bathroom_leak_sensor:signal"   }
+Number:Dimensionless Whole_House_Valve_Signal            "Whole House Valve Signal [%d%%]"                             { channel="mqtt:topic:yolink:whole_house_valve:signal"            }
+Number:Dimensionless Speaker_Hub_Signal                  "Speaker Hub Signal [%d%%]"                                   { channel="mqtt:topic:yolink:speaker_hub:signal"                  }
+
+// Special items for Speaker Hub.
+Number Speaker_Hub_Volume  "Speaker Hub Volume"  (Hall) { channel="mqtt:topic:yolink:speaker_hub:volume"  }
+
+// Example dimmer.
+String               Example_Dimmer            "Example Dimmer"                             { channel="mqtt:topic:yolink:example_dimmer:state"      }
+Number               Example_Dimmer_Brightness "Example Dimmer Brightness"                  { channel="mqtt:topic:yolink:example_dimmer:brightness" }
+String               Example_Dimmer_Request    "Example Dimmer Request"                     { channel="mqtt:topic:yolink:example_dimmer:request"    }
+Number:Dimensionless Example_Dimmer_Signal     "Example Dimmer Signal"                      { channel="mqtt:topic:yolink:example_dimmer:signal"     }
+Switch               Example_Dimmer_Online     "Example Dimmer Online"     (gYolinkOnline ) { channel="mqtt:topic:yolink:example_dimmer:online"     }
+
+//============================================================================

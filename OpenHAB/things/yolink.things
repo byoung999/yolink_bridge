@@ -1,0 +1,72 @@
+// Used for general requests.  Can also add channels for raw reports and responses.
+Thing mqtt:topic:yolink "Yolink Topics" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type string : request "Send a YoLink request" [ commandTopic = "yolink/request" ]
+}
+
+// Chanels for "home" information.  You can also create a thing and channels for "manage".
+Thing mqtt:topic:yolink:home "Yolink Home Info" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type string : id      [ stateTopic = "yolink/home/id"      ]
+      Type string : devices [ stateTopic = "yolink/home/devices" ]
+}
+
+// Leak sensors.
+Thing mqtt:topic:yolink:kitchen_sink_leak_sensor "Kitchen Sink Leak Sensor" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type string : state   [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/state"                                       ]
+      Type string : battery [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/battery"                                     ]
+      Type number : signal  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/signal" , transformationPattern="RB(dBm.rb)" ]
+      Type switch : online  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/online" , on="true", off="false"             ]
+}
+
+Thing mqtt:topic:yolink:master_bathroom_leak_sensor "Master Bathroom Leak Sensor" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type string : state   [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/state"                                       ]
+      Type string : battery [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/battery"                                     ]
+      Type number : signal  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/signal" , transformationPattern="RB(dBm.rb)" ]
+      Type switch : online  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/online" , on="true", off="false"             ]
+}
+
+Thing mqtt:topic:yolink:guest_bathroom_leak_sensor "Guest Bathroom Leak Sensor" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type string : state   [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/state"                                       ]
+      Type string : battery [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/battery"                                     ]
+      Type number : signal  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/signal" , transformationPattern="RB(dBm.rb)" ]
+      Type switch : online  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/online" , on="true", off="false"             ]
+}
+
+// Dimmer.  Added request and brigtness channels to show extra device control.
+Thing mqtt:topic:yolink:example_dimmer "Example Dimmer" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type switch : state      [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/state"     , commandTopic = "yolink/XXXXXXXXXXXXXXXX/request/setState"           , on="on", off="off" ]
+      Type number : signal     [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/signal"    , transformationPattern="RB(dBm.rb)"                                                       ]
+      Type switch : online     [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/online"    , on="true", off="false"                                                                   ]
+      Type number : brightness [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/brightness", commandTopic = "yolink/XXXXXXXXXXXXXXXX/request/setState/brightness"                     ]
+      Type string : request    [                                                    commandTopic = "yolink/XXXXXXXXXXXXXXXX/request"                                         ]
+}
+
+// Manipulator.
+Thing mqtt:topic:yolink:whole_house_valve "Whole House Valve" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type string : state   [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/state"  , commandTopic = "yolink/XXXXXXXXXXXXXXXX/request/setState" ]
+      Type string : battery [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/battery"                                                            ]
+      Type number : signal  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/signal" , transformationPattern="RB(dBm.rb)"                        ]
+      Type switch : online  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/online" , on="true", off="false"                                    ]
+}
+
+// Speaker Hub.
+Thing mqtt:topic:yolink:speaker_hub "Speaker Hub" (mqtt:broker:XXXXXXXXXX)
+{
+    Channels:
+      Type number : signal  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/signal" , transformationPattern="RB(dBm.rb)"                                ]
+      Type switch : online  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/online" , on="true", off="false"                                            ]
+      Type number : volume  [ stateTopic = "yolink/XXXXXXXXXXXXXXXX/volume" , commandTopic = "yolink/XXXXXXXXXXXXXXXX/request/setOption/volume" ]
+}

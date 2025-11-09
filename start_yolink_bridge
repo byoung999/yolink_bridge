@@ -1,0 +1,31 @@
+#!/bin/bash
+
+PROG=yolink_bridge
+PROG_DIR="/home/ha/$PROG"
+if [ -e "/home/ha/credentials/yolink.json" ]; then
+  CONFIG_DIR="/home/ha/credentials"
+else
+  CONFIG_DIR="$PROG_DIR"
+fi
+ARGS="--config-dir=$CONFIG_DIR --log-file=/var/log/$PROG.log"
+MAIL_TO="root"
+
+# cleanup code doesn't really work to kill child process of shell
+cleanup() {
+    # kill all processes whose parent is this process
+    pkill -P $$
+}
+
+for sig in INT QUIT HUP TERM ALRM USR1; do
+  trap "
+    cleanup
+    trap - $sig EXIT
+    kill -s $sig "'"$$"' "$sig"
+done
+trap cleanup EXIT
+
+cd "$PROG_DIR"
+
+./"$PROG" $ARGS 2>&1 | mail -E -s "$PROG failure" $MAIL_TO
+
+exit ${PIPESTATUS[0]}

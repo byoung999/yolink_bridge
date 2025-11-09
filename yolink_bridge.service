@@ -1,0 +1,14 @@
+[Unit]
+Description=yolink_bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=root
+Group=root
+WorkingDirectory=/home/ha/yolink_bridge/
+ExecStart='/home/ha/yolink_bridge/start_yolink_bridge'
+ExecStartPost=/bin/sleep 5
+
+[Install]
+WantedBy=multi-user.target

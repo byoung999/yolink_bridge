@@ -1,0 +1,669 @@
+#!/usr/bin/ruby
+
+# yolink_bridge
+#
+# Bill Young - 11/2025
+#
+# This program creates a bridge between the YoLink MQTT broker and a local
+# MQTT broker to handle the YoLink authentication process and to provide
+# a more device centric structure for the topics.
+#
+# Authentication to the YoLink MQTT server is handled automatically by calling
+# the YoLink API to generate an access token.  This script supports the UAC
+# access method (as opposed to the CSID access method).  This requires a uaid
+# and a secrect_key to be provided in the yolink credentials file.
+#
+# If, instead a username and password are provided in the yolink credentials
+# file, the script assumes the connection is going to a YoLink hub that
+# supports the local API (not all YoLink hubs support this).  Also, the
+# host and port settings, in the yolink config file, will need to be
+# altered accordingly.  Local API support has not been tested.
+# Note that the term "Local API" refers to communication with an appropriate
+# YoLink hub.  It is not related to the "local MQTT" broker referred to in
+# this script.
+#
+# The local MQTT topic structure is a simplified to make it easier to access
+# the data for each device.
+#
+# The local topic structure is start with a "yolink" topic.  Under that is
+# a "home" topic (for common YoLink information) and topics for each device
+# (specified by their deviceId).  Under the home and device topics are
+# topics for each of the data items provided by YoLink, in a flattened form
+# (i.e. items from nested structures are brought up to this level).  A few
+# items (like times and message ids) are omitted.
+#
+# The above data is put together from YoLink general response and report
+# messages (i.e. YoLink doesn't provide messages on a per device basis).
+#
+# To change YoLink values, you will need to send a request.  The request
+# topic can be in different forms with more device/method information
+# in the topic instead of the payload.  The topics can be in the following
+# forms;
+#
+# - yolink/request
+# - yolink/DEVICE-ID/request
+# - yolink/DEVICE-ID/request/METHOD
+# - yolink/DEVICE-ID/request/METHOD/PARAMETER
+#
+# The bridge will fill in some information for you.  You never have
+# to specify a YoLink TOKEN as that is automatically computed based
+# on the DEVICE-ID.
+#
+# You will need to know DEVICE-IDs to send device specific request.
+# You can get the DEVICE-IDs from a call to Home.getDeviceList
+# The yolink/home/devices topic will then be populated with the result of
+# the Home.getDeviceList request.
+# You can also run this program with the --print-device-list option to view
+# the DEVICE-IDs.
+#
+# YoLink API/MQTT structure:
+#
+#   http://doc.yosmart.com/docs/protocol/openAPIV2
+#
+# Sample topic structure presented by the local MQTT broker:
+#
+#   yolink
+#     home
+#       type = Home
+#       id = "..."
+#       devices = [{"deviceId":"xxx","name":"xxx","token":"xxx","type":"xxx",...},...]
+#     dddddddddddddd
+#       type = xxx
+#       deviceId = dddddddddddddd
+#       token = xxx
+#       state = xxx
+#       battery = xxx
+#       signal = xxx
+#       ...
+#     dddddddddddddd
+#       ...
+#     ...
+#
+# See the comment above the publish_to_yolink_broker method to describe how
+# to send requests through the local MQTT broker.
+
+#----------------------------------------------------------------------------
+
+require 'bundler/setup'
+require 'paho-mqtt'
+require 'getoptlong'
+
+require_relative 'yolink_bridge_api'
+require_relative 'yolink_bridge_mqtt'
+
+#----------------------------------------------------------------------------
+
+$prog = File.basename($0).sub(/\.rb$/, '')
+
+config_dir         = File.exist?('/home/ha/credentials/yolink.json') \
+                     ? '/home/ha/credentials' : '.'
+log_file           = nil
+print_access_token = false
+print_home_id      = false
+print_device_list  = false
+no_local           = false
+no_yolink          = false
+verbose            = false
+debug              = false
+
+usage = <<-EOF
+#{$prog} [OPTIONS]
+
+Options:
+-c, --config-dir=        Location of config files (default #{config_dir})
+-l, --log-file=          Name of log file (defaults to stdout)
+-A, --print-access-token Print a UAC
+-H, --print-home-id      Print the home ID
+-D, --print-device-list  Print the list of devices
+-L, --no-local           Don't connect to local mqtt broker
+-Y, --no-yolink          Don't connect to yolink mqtt broker
+-v, --verbose            Print verbose output
+-x, --debug              Print debug output
+-h, --help               Print help message
+EOF
+
+begin
+  opts = GetoptLong.new(
+    [ '--config-dir'        , '-c', GetoptLong::REQUIRED_ARGUMENT ],
+    [ '--log-file'          , '-l', GetoptLong::REQUIRED_ARGUMENT ],
+    [ '--print-access-token', '-A', GetoptLong::NO_ARGUMENT       ],
+    [ '--print-home-id'     , '-H', GetoptLong::NO_ARGUMENT       ],
+    [ '--print-device-list' , '-D', GetoptLong::NO_ARGUMENT       ],
+    [ '--no-local'          , '-L', GetoptLong::NO_ARGUMENT       ],
+    [ '--no-yolink'         , '-Y', GetoptLong::NO_ARGUMENT       ],
+    [ '--verbose'           , '-v', GetoptLong::NO_ARGUMENT       ],
+    [ '--debug'             , '-x', GetoptLong::NO_ARGUMENT       ],
+    [ '--help'              , '-h', GetoptLong::NO_ARGUMENT       ],
+  )
+
+  opts.each do |opt, arg|
+    case opt
+    when '--config-dir'         then config_dir         = arg
+    when '--log-file'           then log_file           = arg
+    when '--print-access-token' then print_access_token = true
+    when '--print-home-id'      then print_home_id      = true
+    when '--print-device-list'  then print_device_list  = true
+    when '--no-local'           then no_local           = true
+    when '--no-yolink'          then no_yolink          = true
+    when '--verbose'            then verbose            = true
+    when '--debug'              then debug              = true
+    when '--help'
+      puts usage
+      exit 0
+    end
+  end
+rescue GetoptLong::InvalidOption
+  # Already reported, no need for stack trace
+  exit
+end
+
+if ARGV.length > 0
+  STDERR.puts "#{$prog}: unexpected arguments"
+  STDERR.puts usage
+  exit 1
+end
+
+#----------------------------------------------------------------------------
+
+# Files containing API/MQTT credentials.
+local_config_file  = "#{config_dir}/mqtt.json"
+yolink_config_file = "#{config_dir}/yolink.json"
+
+local_config  = JSON.parse(File.read(local_config_file ), {symbolize_names: true})
+yolink_config = JSON.parse(File.read(yolink_config_file), {symbolize_names: true})
+
+#----------------------------------------------------------------------------
+
+# MQTT settings
+local_host        = '127.0.0.1' || local_config[:host      ]
+local_port        = 1883        || local_config[:port      ]
+local_keep_alive  = 15          || local_config[:keep_alive]
+local_client_id   = 'local_ruby_bridge'
+
+yolink_host       = 'api.yosmart.com' || yolink_config[:host] # Or, local hub address
+yolink_port       = 8003              || yolink_config[:port] # Or, 1080 for a local hub
+yolink_keep_alive = 60                || yolink_config[:keep_alive]
+yolink_client_id  = "yolink_bridge_#{Process.pid}"
+yolink_subnet_id  = yolink_config[:subnet_id] # Set to use local API with appropriate hub
+
+local_subscriptions  = [ 'yolink/request', 'yolink/+/request/#' ]
+yolink_subscriptions = [ ] # Defined later, need to setup global first
+          
+#----------------------------------------------------------------------------
+
+# Cache for device tokens and types used when processing local requests.
+$device_cache = {}
+
+#----------------------------------------------------------------------------
+
+# Configure a logger.
+PahoMqtt::logger = log_file.nil? ? '/dev/stdout' : log_file
+
+$logger = PahoMqtt::logger
+$logger.level = debug ? Logger::DEBUG
+                      : (verbose ? Logger::INFO : Logger::WARN)
+
+at_exit do
+  $logger.warn "YoLink bridge stopped"
+  exit
+end
+
+#----------------------------------------------------------------------------
+
+# METHOD: get_yolink_topic_base
+#   Get the topic base to send request to the YoLink MQTT server.  It varies
+#   based on whether you are using the local API or the remote API.
+
+def get_yolink_topic_base(yolink_api, yolink_subnet_id)
+  if yolink_subnet_id.nil?
+    yolink_home_id = yolink_api.get_home_id
+    topic_base = yolink_home_id.nil? ? nil : "yl-home/#{yolink_home_id}"
+  else
+    topic_base = "ylsubnet/#{yolink_subnet_id}"
+  end
+
+  topic_base
+end
+
+#----------------------------------------------------------------------------
+
+# METHOD: publish_to_yolink_broker
+#   Send a message to the YoLink broker.  Message may come from the local
+#   MQTT broker or by a request generated by this script.  In addition to
+#   a standard style YoLink topic/message, there are several abbreviated forms
+#   to make interacting with the YoLink server a bit easier.
+#
+#   The topic can be one of the following formats:
+#
+#     - yolink/request
+#       - Abbreviated standard YoLink request (HOME-ID is computed for you).
+#       - Standard YoLink request.
+#       - Requires method and targetDevice/token in messages that need them.
+#       - Example payloads:
+#         - setState on a Manipulator:
+#           {
+#             "method":       "setState",
+#             "targetDevice": "DEVICE-ID",
+#             "token":        "TOKEN",
+#             "params":       { "state": "open" }
+#           }
+#
+#     - yolink/DEVICE-ID/request
+#       - Device specific request.
+#       - DEVICE-ID may be "home" or "manage" for home/manage messages (i.e.
+#         getDeviceList).
+#       - If method is not specified, it is assumed to be setState.
+#       - If params is not specified, the whole payload is either a params hash
+#         or simple state string for setState (i.e. "open"/"close").
+#       - targetDevice/token will be automatically be added to the final
+#         payload.
+#       - Example payloads:
+#         - setOption on a SpeakerHub device:
+#           {"method": "setOption", "params": {"volume": 5, "mute": false}}
+#         - setState on a Manipulator: (simple string)
+#           "open"
+#         - setState on a Manipulator: (params hash)
+#           { "state": "open" }
+#         - setState on a Manipulator: (full request)
+#           {"method": "setState", "params": {"state": "open"}}
+#
+#     - yolink/DEVICE-ID/request/METHOD
+#       - Device specific request with a specific method.
+#       - METHOD is simply the method name without the type (i.e. setState vs
+#         Manipulator.setState).
+#       - DEVICE-ID may be "home" or "manage" for home/manage messages (i.e.
+#         getDeviceList).
+#       - The payload for the message can just be a string (i.e. "open"/"close")
+#         if the method is setState.  Otherwise, it must be a YoLink params
+#         hash.
+#       - method/targetDevice/token will be automatically be added to the final
+#         payload.
+#       - Example payloads:
+#         - setOption on a SpeakerHub device:
+#           {"volume": 5, "mute": false}
+#         - setState on a Manipulator: (simple string)
+#           "open"
+#         - setState on a Manipulator: (params hash)
+#           { "state": "open" }
+#
+#     - yolink/DEVICE-ID/request/METHOD/PARAMETER
+#       - Device specific request with a specific method and parameter.
+#       - METHOD is simply the method name without the type (i.e. setState vs
+#         Manipulator.setState).
+#       - DEVICE-ID may be "home" or "manage" for home/manage messages (i.e.
+#         getDeviceList).
+#       - PARAMETER is the parameter to set (i.e. volume, brightness, etc.).
+#       - The payload for the message should be a value (i.e. "open"/"close"
+#         or a number).
+#       - method/targetDevice/token will be automatically be added to the final
+#         payload.
+#       - Example payloads:
+#         - setOption/volume on a SpeakerHub device:
+#           5
+#         - setState/state on a Manipulator:
+#           "open"
+
+def publish_to_yolink_broker(yolink_mqtt, yolink_api, yolink_subnet_id,
+                             topic, payload)
+
+  # Don't send error state back to YoLink as it could cause a loop.
+  return if payload == 'error'
+
+  topic_base = get_yolink_topic_base(yolink_api, yolink_subnet_id)
+  unless topic_base.nil?
+    yolink_topic   = "#{topic_base}/**/request"
+    yolink_payload = nil
+
+    case topic
+    when 'yolink/request'
+
+      # This is a full standard YoLink request.
+
+      payload_hash = JSON.parse(payload, {symbolize_names: true})
+
+      # If the request is missing token or the type, try to add them, if we
+      # have the information.
+      target_device = payload_hash[:targetDevice]
+      unless target_device.nil?
+        if payload_hash[:token].nil? && $device_cache[target_device].has_key?(:token)
+          payload_hash[:token] = $device_cache[target_device][:token]
+        end
+        type = $device_cache[target_device][:type]
+        if !type.nil? && payload_hash.has_key?(:method) && payload_hash[:method] !~ /\./
+          payload_hash[:method] = "#{type}.#{payload_hash[:method]}"
+        end
+      end
+
+      yolink_payload = payload_hash.to_json
+
+    when /^yolink\/([^\/]+)\/request$/,
+         /^yolink\/([^\/]+)\/request\/([^\/]+)$/,
+         /^yolink\/([^\/]+)\/request\/([^\/]+)\/([^\/]+)$/
+
+      # This is a abbreviated request associated with a specific device.  Build
+      # up a standard YoLink request from the minimal information provided in the
+      # topic and payload.
+
+      device_id = $1
+      method    = $2  # nil if method not specified in topic
+      param     = $3  # nil if specific parameter not specified in topic
+
+      payload_hash = if payload =~ /^{/
+                       begin
+                         JSON.parse(payload, {symbolize_names: true})
+                       rescue => e
+                         $logger.error "Unable to parse payload " \
+                                       "\"#{payload}\" for topic \"#{topic}\" "\
+                                       "(#{e.message})"
+                         return
+                       end
+                      elsif param.nil?
+                        # Payload is a simple string value to be used for state.
+                        { state: payload }
+                      else
+                        # Specific parameter with a simple payload.
+                        # Try to get the payload to be the correct type.
+                        payload = case payload
+                                  when /^0\d+$/           then payload
+                                  when /^-{0,1}\d+$/      then payload.to_i
+                                  when /^-{0,1}\d+\.\d+$/ then payload.to_f
+                                  else                         payload
+                                  end
+                        { param.to_sym => payload }
+                      end
+
+      if method.nil?
+        # If the method wasn't specified in the topic, the payload should
+        # either contain:
+        # - A hash with method and params
+        # - A params hash to be used with the default method setState
+        # - A string to be used for a state value with setState (string turned
+        #   to params hash above)
+        method = payload_hash[:method] || 'setState'
+        params = payload_hash[:params] || payload_hash
+      else
+        # If method was specified in the topic, the message should just
+        # contain the params (or a string to use for a "state" value).
+        params = payload_hash
+      end
+
+      # Handle MQTT home/manage/device specific requests.
+      if ['home', 'manage'].include?(device_id.downcase)
+        # Handle home/manage requests.
+        type    = device_id.capitalize # Home or Manage
+        method  = "#{type}.#{method}" unless method =~ /\./
+        request = { method: method }
+        request[:params] = params unless params.nil?
+        yolink_payload = request.to_json
+
+      elsif $device_cache.has_key?(device_id)
+        # Handle device specific requests.
+        type  = $device_cache[device_id][:type ]
+        token = $device_cache[device_id][:token]
+        if type.nil? || token.nil?
+          $logger.error "No token/type cached for device \"#{device_id}\""
+        else
+          method  = "#{type}.#{method}" unless method =~ /\./
+          request = { method: method, targetDevice: device_id, token: token }
+          request[:params] = params unless params.nil?
+          yolink_payload = request.to_json
+        end
+      else
+        $logger.error "Invalid device id \"#{device_id}\""
+      end
+
+    else
+      $logger.error "Invalid topic \"#{topic}\""
+    end
+
+    unless yolink_payload.nil?
+      yolink_mqtt.client.publish(yolink_topic, yolink_payload, false, 1)
+      $logger.info "Published to yolink broker: #{yolink_topic} => #{yolink_payload}"
+    end
+  end
+end
+
+#----------------------------------------------------------------------------
+
+# METHOD: publish_to_local_broker
+#   Take a message coming from the YoLink MQTT broker (i.e. a report or
+#   response) and break it down to device data to publish to, the more
+#   detailed, local MQTT broker topic structure.  Additionally, the
+#   report or response message is also published to the local MQTT broker
+#   in its entirety (in case it is needed for some reason).
+
+def publish_to_local_broker(local_mqtt, yolink_topic, yolink_message)
+  data = JSON.parse(yolink_message, {symbolize_names: true})
+
+  # Publish the raw response/report to the local MQTT broker first.
+  topic   = "yolink/#{yolink_topic.sub(/.*\//, '')}"
+  local_mqtt.client.publish(topic, yolink_message, false, 1)
+  $logger.info "Published to local broker: #{topic} => #{yolink_message}"
+
+  # Break up the message into individual values.
+  values = unpack_yolink_data(data)
+  $logger.info "Values: #{values.inspect}"
+
+  base = values['/deviceId'] ? "#{values['/deviceId']}" : 'home'
+
+  # Clear out any error descriptions that might have previously sent to client.
+  values['/desc'] = '' unless values.has_key?('/desc')
+
+  # If this is the result from Home.getDeviceList, then publish the type,
+  # deviceId, token, etc.  to the topic for each individual device.
+  # This keeps all of the information about a device together.
+  values['/devices']&.each do |device|
+    base_topic = "yolink/#{device[:deviceId]}"
+    device.each do |k, v|
+      topic   = "#{base_topic}/#{k}"
+      payload = v.is_a?(Array) ? v.to_json : v
+      local_mqtt.client.publish(topic, payload, false, 1)
+      $logger.info "Published to local broker: #{topic} => #{payload}"
+    end
+
+    # Save the device token and types for use when parsing local requests.
+    device_id = device[:deviceId]
+    unless device_id.nil?
+      $device_cache[device_id] = { token: device[:token], type: device[:type] }
+    end
+  end
+
+  # Publish simple values (including the device list as a single string)
+  # to the local broker.
+  values.each do |k, v|
+    topic   = "yolink/#{base}#{k}"
+    payload = v.is_a?(Array) ? v.to_json : v
+    local_mqtt.client.publish(topic, payload, false, 1)
+    $logger.info "Published to local broker: #{topic} => #{payload}"
+  end
+end
+
+#----------------------------------------------------------------------------
+
+# METHOD: unpack_yolink_data
+#   Unpack a YoLink response or report hash into a flat a flat hash.
+#   Change a few keys for uniformity.  Skip a few uninteresting items.
+#
+def unpack_yolink_data(data, base='', values={})
+  base = '' # Flattens data into a single hash, remove to have nested hashes
+
+  data.each do |k, v|
+    case k
+    when :targetDevice   # Use deviceId consistently
+      k = :deviceId
+    when :event, :method # Turn method or event to type
+      k = :type
+      v = v.sub(/\..*/, '')
+    when :time, :msgid, :tz, :reportAt
+      # Skip less interesting data (:time might be in multiple levels).
+      next
+    end
+
+    if v.is_a?(Hash)
+      values = unpack_yolink_data(v, "#{base}/#{k}", values)
+    else
+      values["#{base}/#{k}"] = v # Individual values and arrays
+    end
+  end
+
+  values
+end
+
+#----------------------------------------------------------------------------
+
+# Main program.
+
+begin
+
+  #-------------------------
+
+  # Setup the connection to the yolink API.
+  yolink_api = YolinkBridge::API.new(yolink_config[:uaid], yolink_config[:secret_key])
+
+  #-------------------------
+
+  # Handle print information requests.
+  puts yolink_api.get_access_token          if print_access_token
+  puts yolink_api.get_home_id               if print_home_id
+  puts yolink_api.get_device_list_printable if print_device_list
+  exit 0 if print_access_token || print_home_id || print_device_list
+
+  #-------------------------
+
+  # Connect to the local MQTT broker.
+  if no_local
+    local_mqtt = nil
+  else
+    local_mqtt = YolinkBridge::MQTT.new(:local,
+                                        local_host, local_port,
+                                        local_client_id, local_keep_alive)
+
+    local_mqtt.set_credentials(local_config[:username],
+                               local_config[:password])
+  end
+
+  #-------------------------
+
+  # Connect to the yolink MQTT broker.
+  if no_yolink
+    yolink_mqtt = nil
+  else
+    yolink_mqtt = YolinkBridge::MQTT.new(:yolink,
+                                         yolink_host, yolink_port,
+                                         yolink_client_id, yolink_keep_alive)
+
+    # If uaid is provided in credentials, we'll get an access token later
+    # and use it as the username.
+    unless yolink_config.has_key?('uaid')
+      yolink_mqtt.set_credentials(yolink_config[:username],
+                                  yolink_config[:password])
+    end
+  end
+
+  #-------------------------
+
+  # Forward messages from the local broker to the yolink broker.
+  local_mqtt&.client.on_message do |message|
+    $logger.info "Received from local broker: " \
+                 "#{message.topic} => #{message.payload}"
+    if yolink_mqtt&.connected?
+      publish_to_yolink_broker(yolink_mqtt, yolink_api, yolink_subnet_id,
+                               message.topic, message.payload)
+    end
+  end
+
+  #-------------------------
+
+  # Forward messages from the yolink broker to the local broker.
+  yolink_mqtt&.client.on_message do |message|
+    $logger.info "Received from yolink broker: " \
+                 "#{message.topic} => #{message.payload}"
+    if local_mqtt&.connected?
+      publish_to_local_broker(local_mqtt, message.topic, message.payload)
+    end
+  end
+
+  #-------------------------
+
+  # Output a bridge started message to the log (even if log level is not INFO).
+  unless log_file.nil?
+    save_logger_level = $logger.level
+    $logger.level = Logger::INFO
+    $logger.info "YoLink bridge started"
+    $logger.level = save_logger_level
+  end
+
+  #-------------------------
+
+  # Loop forever monitoring packets from the MQTT brokers.
+  pass    = 0
+  backoff = -1
+  loop do
+    pass += 1
+
+    # Backoff 15 seconds at a time for up to an hour.
+    backoff = (backoff == -1) ? 0 : [backoff + 15, 1 * 60 * 60].min
+    $logger.info "connecting: backoff = #{backoff}"
+    sleep(backoff) unless backoff.zero?
+
+    # Make sure the brokers are connected.
+
+    unless local_mqtt&.connected?
+      next unless local_mqtt.connect_mqtt_client(local_subscriptions)
+    end
+
+    unless yolink_mqtt&.connected?
+      # We have to get the access token from the YoLink API before we can
+      # connect to the YoLink MQTT server.
+      if yolink_config.has_key?(:uaid)
+        yolink_username = yolink_api.get_access_token
+        $logger.debug "yolink username = #{yolink_username}"
+        next if yolink_username.nil?
+        yolink_mqtt.set_credentials(yolink_username)
+      end
+
+      if yolink_subscriptions.empty?
+        topic_base = get_yolink_topic_base(yolink_api, yolink_subnet_id)
+        next if topic_base.nil?
+
+        yolink_subscriptions = [
+          "#{topic_base}/+/report",
+          "#{topic_base}/+/response",
+          #"#{topic_base}/**/request", # echos any requests and may cause loops
+        ]
+        $logger.info "yolink_subscriptions = #{yolink_subscriptions.inspect}"
+      end
+
+      next unless yolink_mqtt.connect_mqtt_client(yolink_subscriptions)
+
+      # When we connect, get the device list.  This is necessary if we are
+      # going to process messages to set values using the local MQTT format
+      # as we need to know the type and token for each device.
+      request = { method: "Home.getDeviceList" }
+      publish_to_yolink_broker(yolink_mqtt, yolink_api, yolink_subnet_id,
+                               "yolink/request", request.to_json)
+    end
+
+    backoff = -1 # Connections opened, reset the backoff time
+
+    # Continuously process messages from the MQTT brokers.
+    # If a broker is disconnected, break out of this loop and the outer loop
+    # will handle reconnecting.
+    loop do
+      break unless local_mqtt&.connected?  && local_mqtt.run_mqtt_loop_instance
+      break unless yolink_mqtt&.connected? && yolink_mqtt.run_mqtt_loop_instance
+
+      sleep(1) # Sleep between passes
+    end
+
+  end
+
+  #-------------------------
+
+rescue => e
+  # Log all fatal errors after we get going.
+  $logger.fatal e.message
+  raise
+end
+
+#----------------------------------------------------------------------------
