@@ -111,7 +111,7 @@ class YolinkBridge
         @connected = false
       end
 
-      $logger.info "#{@type}: connected? #{@client.connected?}, " \
+      $logger.debug "#{@type}: connected? #{@client.connected?}, " \
                    "@connected = #{@connected}"
       @connected = false unless @client.connected?
 
