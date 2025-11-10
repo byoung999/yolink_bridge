@@ -442,7 +442,7 @@ def publish_to_local_broker(local_mqtt, yolink_topic, yolink_message)
 
   # Break up the message into individual values.
   values = unpack_yolink_data(data)
-  $logger.info "Values: #{values.inspect}"
+  $logger.debug "Values: #{values.inspect}"
 
   base = values['/deviceId'] ? "#{values['/deviceId']}" : 'home'
 
