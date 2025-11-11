@@ -261,6 +261,7 @@ the E-mail address to send messages to (if the program dies unexpectedly).  Then
 run the following commands:
 
 ```
+cp yolink_bridge.service /etc/systemd/system
 systemctl --system daemon-reload
 systemctl enable yolink_bridge.service
 service yolink_bridge start
