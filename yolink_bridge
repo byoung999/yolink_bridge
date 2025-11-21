@@ -596,66 +596,81 @@ begin
   #-------------------------
 
   # Loop forever monitoring packets from the MQTT brokers.
-  pass    = 0
-  backoff = -1
+  backoff_seconds = nil
+  backoff_time    = nil
+  first_pass      = true
   loop do
-    pass += 1
-
-    # Backoff 15 seconds at a time for up to an hour.
-    backoff = (backoff == -1) ? 0 : [backoff + 15, 1 * 60 * 60].min
-    $logger.info "connecting: backoff = #{backoff}"
-    sleep(backoff) unless backoff.zero?
-
-    # Make sure the brokers are connected.
-
-    unless local_mqtt&.connected?
-      next unless local_mqtt.connect_mqtt_client(local_subscriptions)
+    # If we're not connected and the backoff timer isn't active, start the
+    # backoff timer.
+    if local_mqtt&.connected? && yolink_mqtt&.connected?
+      backoff_seconds  = nil
+      backoff_time     = nil
+    elsif backoff_time.nil?
+      # Backoff 15 seconds at a time for up to an hour.
+      backoff_seconds = backoff_seconds.nil? \
+                        ? 0 : [backoff_seconds + 15, 1 * 60 * 60].min
+      backoff_time    = Time.now + backoff_seconds
+      unless first_pass
+        $logger.info "disconnected: backoff_seconds = #{backoff_seconds}"
+      end
     end
 
-    unless yolink_mqtt&.connected?
-      # We have to get the access token from the YoLink API before we can
-      # connect to the YoLink MQTT server.
-      if yolink_config.has_key?(:uaid)
-        yolink_username = yolink_api.get_access_token
-        $logger.debug "yolink username = #{yolink_username}"
-        next if yolink_username.nil?
-        yolink_mqtt.set_credentials(yolink_username)
+    # See if the backoff timer has expired.
+    backoff_time = nil if !backoff_time.nil? && Time.now >= backoff_time
+
+    # Sleep between passes.
+    if first_pass
+      first_pass = false
+    else
+      sleep 1
+    end
+
+    # Check connections and connect if necessary only if the backoff timer is
+    # not running.
+    if backoff_time.nil?
+      unless local_mqtt&.connected?
+        local_mqtt.connect_mqtt_client(local_subscriptions)
       end
 
-      if yolink_subscriptions.empty?
-        topic_base = get_yolink_topic_base(yolink_api, yolink_subnet_id)
-        next if topic_base.nil?
+      unless yolink_mqtt&.connected?
+        # We have to get the access token from the YoLink API before we can
+        # connect to the YoLink MQTT server (except when using YoLink local
+        # hub).
+        if yolink_config.has_key?(:uaid)
+          yolink_username = yolink_api.get_access_token(true)
+          $logger.debug "yolink username = #{yolink_username}"
+          next if yolink_username.nil?
+          yolink_mqtt.set_credentials(yolink_username)
+        end
 
-        yolink_subscriptions = [
-          "#{topic_base}/+/report",
-          "#{topic_base}/+/response",
-          #"#{topic_base}/**/request", # echos any requests and may cause loops
-        ]
-        $logger.info "yolink_subscriptions = #{yolink_subscriptions.inspect}"
+        # Build the subscription list just before we try to connect
+        # (could get an exception if the API isn't working at the moment).
+        if yolink_subscriptions.empty?
+          topic_base = get_yolink_topic_base(yolink_api, yolink_subnet_id)
+          next if topic_base.nil?
+
+          yolink_subscriptions = [
+            "#{topic_base}/+/report",
+            "#{topic_base}/+/response",
+            #"#{topic_base}/**/request", # echos any requests and may cause loops
+          ]
+          $logger.info "yolink_subscriptions = #{yolink_subscriptions.inspect}"
+        end
+
+        if yolink_mqtt.connect_mqtt_client(yolink_subscriptions)
+          # When we connect, get the device list.  This is necessary if we are
+          # going to process messages to set values using the local MQTT format
+          # as we need to know the type and token for each device.
+          request = { method: 'Home.getDeviceList' }
+          publish_to_yolink_broker(yolink_mqtt, yolink_api, yolink_subnet_id,
+                                   'yolink/request', request.to_json)
+        end
       end
-
-      next unless yolink_mqtt.connect_mqtt_client(yolink_subscriptions)
-
-      # When we connect, get the device list.  This is necessary if we are
-      # going to process messages to set values using the local MQTT format
-      # as we need to know the type and token for each device.
-      request = { method: "Home.getDeviceList" }
-      publish_to_yolink_broker(yolink_mqtt, yolink_api, yolink_subnet_id,
-                               "yolink/request", request.to_json)
     end
 
-    backoff = -1 # Connections opened, reset the backoff time
-
-    # Continuously process messages from the MQTT brokers.
-    # If a broker is disconnected, break out of this loop and the outer loop
-    # will handle reconnecting.
-    loop do
-      break unless local_mqtt&.connected?  && local_mqtt.run_mqtt_loop_instance
-      break unless yolink_mqtt&.connected? && yolink_mqtt.run_mqtt_loop_instance
-
-      sleep(1) # Sleep between passes
-    end
-
+    # Process messages from the MQTT brokers.
+    local_mqtt.run_mqtt_loop_instance  if local_mqtt&.connected?
+    yolink_mqtt.run_mqtt_loop_instance if yolink_mqtt&.connected? 
   end
 
   #-------------------------
@@ -665,5 +680,6 @@ rescue => e
   $logger.fatal e.message
   raise
 end
+
 
 #----------------------------------------------------------------------------

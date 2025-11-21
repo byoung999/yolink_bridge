@@ -68,15 +68,17 @@ class YolinkBridge
       begin
         $logger.debug "#{@type} client.connect"
         @client.connect
-        $logger.debug "#{@type} client.connect finished"
+        @connected = @client.connected?
+        $logger.debug "#{@type} client.connect finished (#{@connected})"
 
         # Subscribe to the specified topics.
-        subscriptions.each do |topic|
-          @client.subscribe([topic, 0]) # The array defines topic and QoS
-          $logger.info "Subscribed to #{@type} topic: #{topic}"
+        if @connected
+          subscriptions.each do |topic|
+            @client.subscribe([topic, 0]) # The array defines topic and QoS
+            $logger.info "Subscribed to #{@type} topic: #{topic}"
+          end
         end
 
-        @connected = true
       rescue => e
         $logger.error "#{@type} client connect failure (#{e.inspect})"
         @connected = false
