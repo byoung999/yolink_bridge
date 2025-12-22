@@ -530,6 +530,20 @@ begin
 
   #-------------------------
 
+  # Allow toggling of verbose and debug flags.
+  Signal.trap('USR1') do
+    verbose = !verbose
+    $logger.level = debug ? Logger::DEBUG
+                          : (verbose ? Logger::INFO : Logger::WARN)
+  end
+  Signal.trap('USR2') do
+    debug = !debug
+    $logger.level = debug ? Logger::DEBUG
+                          : (verbose ? Logger::INFO : Logger::WARN)
+  end
+
+  #-------------------------
+
   # Connect to the local MQTT broker.
   if no_local
     local_mqtt = nil

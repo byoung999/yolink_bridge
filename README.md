@@ -224,10 +224,15 @@ Request messages can be sent in a variety of ways:
 
 ## Installation
 
-Ensure ruby is installed on your computer (i.e. `apt install ruby`).
+Ensure ruby is installed on your computer:
 
-cd to the program directory and run the command:<br>
 ```
+apt install ruby ruby-bundler
+```
+Install ruby libraries:
+
+```
+cd yolink_bridge
 bundle install
 ```
 
@@ -266,6 +271,12 @@ systemctl --system daemon-reload
 systemctl enable yolink_bridge.service
 service yolink_bridge start
 ```
+
+### Signals
+
+Logging can be toggled by sending signals to the running process.  Sending a USR1
+signal will toggle verbose mode (i.e. kill -USR1 PROCESS-ID).  Sending a USR2 signal
+will toggle debug mode.
 
 ---
 
