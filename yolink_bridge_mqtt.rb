@@ -27,14 +27,32 @@ class YolinkBridge
 
     def initialize(type, host, port, client_id, keep_alive)
       @type = type  # :local or :yolink (for debugging messages)
-      @connected = false
-      @client = PahoMqtt::Client.new(host:            host,
-                                     port:            port,
-                                     client_id:       client_id,
-                                     keep_alive:      keep_alive,
-                                     reconnect_limit: 0,
-                                     persistent:      true,
-                                     blocking:        true)
+      set_connected(false)
+
+      retries = $stdout.tty? ? 0 : 10
+      delay   = 10
+
+      @client = nil
+      retries.downto(0).each do |r|
+        begin
+          @client = PahoMqtt::Client.new(host:            host,
+                                         port:            port,
+                                         client_id:       client_id,
+                                         keep_alive:      keep_alive,
+                                         reconnect_limit: 0,
+                                         persistent:      true,
+                                         blocking:        true)
+        rescue => e
+          if r.zero?
+            $logger.error "YolinkBridge::MQTT: Unable to connect (#{e.inspect})"
+            raise
+          else
+            $logger.warn 'YolinkBridge::MQTT: Retrying...'
+            sleep(delay)
+            delay *= 1.75
+          end
+        end
+      end
     end
 
     #-------------------------
@@ -58,30 +76,59 @@ class YolinkBridge
 
     #-------------------------
 
+    # METHOD: set_connected
+    #   Set the instance connection state based on the MQTT connection state.
+    #   It seems like the MQTT connection state can be left connected when the
+    #   connection really isn't working.  So, we'll track the state we expect
+    #   it to be.
+
+    def set_connected(connected)
+      @connected = connected
+    end
+
+    #-------------------------
+
+    # METHOD: disconnect
+    #   Disconnect the MQTT client.  Don't raise an exception if the client
+    #   can't be disconnected (i.e. write error).  Just consider it to be
+    #   disconnected as far as the instance is concerned.
+
+    def disconnect
+      if @client.connected?
+        begin
+          @client.disconnect
+        rescue
+        end
+      end
+      set_connected(false)
+    end
+
+    #-------------------------
+
     # METHOD: connect_mqtt_client
     #   Connect to an MQTT client and subscribe to the specified topics.
     #   The status of whether we successfully connected is returned.
 
     def connect_mqtt_client(subscriptions)
-      return true if connected?
+      return true if connected? && @client.connected?
 
       begin
         $logger.debug "#{@type} client.connect"
         @client.connect
-        @connected = @client.connected?
-        $logger.debug "#{@type} client.connect finished (#{@connected})"
+        set_connected(@client.connected?)
+        $logger.debug "#{@type} client.connect finished (#{connected?})"
 
         # Subscribe to the specified topics.
-        if @connected
+        if connected?
           subscriptions.each do |topic|
             @client.subscribe([topic, 0]) # The array defines topic and QoS
-            $logger.info "Subscribed to #{@type} topic: #{topic}"
+            $logger.info "Subscribing to #{@type} topic: #{topic}"
           end
         end
 
       rescue => e
         $logger.error "#{@type} client connect failure (#{e.inspect})"
-        @connected = false
+        set_connected(false)
       end
 
       connected?
@@ -97,25 +144,34 @@ class YolinkBridge
     #   The status of whether we're still connected is returned.
 
     def run_mqtt_loop_instance
-      @connected = true
+      if connected?
+        begin
+          $logger.debug "before #{@type} client.loop_read"
+          @client.loop_read
 
-      begin
-        $logger.debug "before #{@type} client.loop_read"
-        @client.loop_read
+          $logger.debug "before #{@type} client.loop_write"
+          @client.loop_write
 
-        $logger.debug "before #{@type} client.loop_write"
-        @client.loop_write
-
-        $logger.debug "before #{@type} client.loop_misc"
-        @client.loop_misc
-      rescue PahoMqtt::WritingException => e
-        $logger.debug "#{@type} client failure (#{e.inspect})"
-        @connected = false
+          $logger.debug "before #{@type} client.loop_misc"
+          @client.loop_misc
+        rescue PahoMqtt::WritingException => e
+          $logger.warn "#{@type} client writing exception (#{e.inspect})"
+          disconnect
+        rescue PahoMqtt::PacketException => e
+          # Invalid suback QoS value (PahoMqtt::PacketException)
+          # Started happening a couple of weeks apart.  It seems like
+          # we get a disconnect from the client, then we get "not authorised"
+          # connection refusal.  Then we have the Qos problem.
+          # Added test for connected? at the top of this method to see if
+          # it helps with the source of the problem.
+          $logger.warn "#{@type} client packet exception (#{e.inspect})"
+          disconnect
+        end
       end
 
-      $logger.debug "#{@type}: connected? #{@client.connected?}, " \
-                   "@connected = #{@connected}"
-      @connected = false unless @client.connected?
+      $logger.debug "#{@type}: client.connected? #{@client.connected?}, " \
+                    "connected? = #{connected?}"
+      set_connected(@client.connected?)
 
       connected?
     end

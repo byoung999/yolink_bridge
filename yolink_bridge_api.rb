@@ -66,7 +66,7 @@ class YolinkBridge
         $logger.debug "send_request: parsed_response = #{body}"
 
       rescue RestClient::ExceptionWithResponse => e
-        $logger.error "#send_request: Unable to access: #{url} (#{e.response})"
+        $logger.error "send_request: Unable to access: #{url} (#{e.response})"
         body = nil
       end
 
@@ -90,7 +90,7 @@ class YolinkBridge
       end
 
       # Retry the request in case it fails (it happens sometimes in practice).
-      retries = 1
+      retries = $stdout.tty? ? 1 : 10
       delay   = 10
 
       parsed_body = nil
@@ -133,8 +133,9 @@ class YolinkBridge
             $logger.error "Unable to retrieve data (#{parsed_body[:code]}: #{msg})"
             return nil
           else
-            $logger.info "yolink_request: Retrying request"
+            $logger.warn "yolink_request: Retrying request..."
             sleep(delay) 
+            delay *= 1.75
             # Get a fresh access token in case there was a problem with the
             # old one.  If we're in the process of getting the access token,
             # then we'll just let it try again with the retry.
